@@ -1,0 +1,539 @@
+---
+title: "Final Project - Google Store Games"
+author: "Zihan Chen, Beibei Du, Raymart Evangelista, Shirui Huang"
+output:
+  html_document:
+    theme: cosmo
+    code_folding: hide
+  pdf_document: default
+---
+
+## PART I Introduction
+- **Background**: In the era of rapid development of technology and new creations of entertainment, there are various games for users to play to serve different purposes.
+- **Data**:
+  - We got the data from Kaggle
+    - Reference link: https://www.kaggle.com/lava18/google-play-store-apps
+  - Contents: each app (row) has information for its catergory, rating, size, how many reviews, how many installations, is it a free game or not, price, and content rating.
+  - There are 13 columns in this dataset:[TODO here: describe the dataset]
+    - *App*: Application name.
+    - *Category*: Category the app belongs to 
+    - *Rating*: Overall user rating of the app (as when scraped)
+    - *Reviews*: Number of user reviews for the app (as when scraped)
+    - *Size*: Size of the app (as when scraped)
+    - *Installs*: Number of user downloads/installs for the app (as when scraped)
+    - *Type*: Paid or Free
+    - *Price*: Price of the app
+    - *Content.Rating*: Age group the app is targeted at - Children / Mature 21+ / Adult
+    - *Genres*: An app can belong to multiple genres (apart from its main category). For eg, a musical family game will belong to (*Genres* is more specific than *Category*)
+    
+- **QUESTION: What makes a Google Store game higher rated?**
+  - *Hypothesis 1*: game's popularity might affect its rating, while more popular game (`Reviews`) tends to get higher rating score. 
+  - *Hypothesis 2*: game's rating might also be most affected by the category, certain category might always be rated better than others. 
+  - *Hypothesis 3*: people love free games! Free games might have higher ratings than paid games, and we can further explore how the variation of the price affects the rating.
+
+
+### Load packages
+- Load all the packages that are necessary for our project
+```{r load-packages, message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(broom)
+library(tidymodels)
+```
+
+---
+
+## PART II The Data
+
+### Data Import
+- First load the full dataset
+```{r import raw data}
+games <- read.csv("data/googleplaystore.csv")
+#View(games)
+```
+
+### Data Wrangling
+- When glimpsing the dataset, we found that `Type` seems serve same function as the column `Price`. It might not be necessary to remain that column. Thus we need to check what other things that `Type` has rather than Free and Paid.
+```{r TYPE wrangling 1}
+games |>
+  distinct(Type)
+```
+
+
+
+```{r TYPE wrangling 2}
+games |>
+  filter (Type == "NaN" | Type == 0) 
+```
+- We are not sure what "NaN" and 0" are, so take a look at the whole row of the "NaN" and 0 type 
+  - For the "NaN" type, the price is 0 so we categorize it as "Free" 
+  - For the 0 type, the whole data is messed up so we decide to drop it 
+
+```{r TYPE wrangling 3}
+games <-
+games |>
+  # we consider NaN as Free in the Type
+  mutate(Type = case_when(Type == "NaN" ~ "Free", TRUE ~ Type))
+
+games <- games |>
+filter(Type != 0)
+
+```
+
+
+```{r RATING wrangling}
+games <- 
+  games |>
+  filter(Rating != "NaN")
+```
+- This above code chunk drop all the rows that don't have a rating
+
+```{r REVIEW wrangling}
+games$Reviews <- as.numeric (games$Reviews)  
+```
+- This above code chunk convert `Reviews` to numeric number
+
+```{r remove sub_genre, warning = F}
+games <- games |>
+  separate(col = Genres, into = c("Genres", "Sub_Genres"), sep = "\\;", extra = "merge")
+
+```
+- This above code chunk is used to create a new column called Main_Genre that takes a substring from the Genre column that only includes the main genre.
+
+```{r PRICE wrangling 1}
+games <- games |>
+  # in the Price column, we get rid of the sign of dollar and take the remaining things as numeric
+  mutate(across("Price", ~gsub("\\$", "", .) %>% as.numeric))
+```
+
+- Wrangle the `Price` column:
+  - We need to get rid of the dollar sign in front of the Price and make everything numeric in order to do the statistical analysis later
+    - Reference: https://stackoverflow.com/questions/64741916/how-to-remove-the-dollar-sign-in-r
+  - However, this doesn't finish all, since "0" does not have dollar sign in front of it and it is not being wrangled. 
+  - Thus we also change 0 to 0.00 as numeric value for further analysis.
+```{r PRICE wrangling 2}
+games$Price[games$Price == "0"] <- as.numeric(0.00)
+#View(games)
+```
+
+- Lastly, since the dataset contains all apps from Google Store but we are only interested in game category, so we filter only the GAME.
+```{r CATEGORY wrangling}
+games <- games |>
+  filter(Category == "GAME")
+```
+
+
+---
+
+## PART III Analysis
+> Outline for analysis
+
+- *3.1 Exploratory Data Analysis*: We will first present with some descriptive information, such as:
+  - Look at how many observations are free versus paid
+  - What is the distribution of free and paid apps in each category? Such as, How many free/paid apps in the BUSINESS category or other categories
+  - How many apps have been updated recently? (Look at Last.Updated Column and create a visualization)
+
+- *3.2 Data Analysis*: 
+  - Then, we are going to answer the main question with both visualization and statistical models with three hypothesis. 
+  - Lastly, we will the compare and select model that could best catch and represent the variations of the game's Rating.
+  
+    
+### 3.1 Exploratory Data Analysis
+```{r Distrbution of Rating, warning=F, message=FALSE}
+#Visualization:
+ggplot(data = games, mapping = aes(x = Rating)) + 
+  geom_histogram(color = "grey", fill = "#6a7b76", binwidth = 0.1) + 
+  geom_vline(xintercept = mean(games$Rating), color = "red") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+  labs(title = "Distribution of Games' Rating")
+
+#Summarize stats:
+summary(games$Rating)
+```
+
+- Take a look at the Rating distribution. The mean game rating is 4.1 and the median is 4.3. It is skewed to the left. 
+  - The mean is marked by red line in above histogram.
+
+
+```{r Distribution of Review, warning=FALSE, message=FALSE}
+#Summarize stats:
+Reviews_stats <- summary(games$Reviews) |> tidy()
+Reviews_stats
+
+#Visualization:
+ggplot(data = games, mapping = aes(x = Reviews)) + 
+  geom_histogram(color = "grey", fill = "#6a7b76") + 
+  geom_vline(xintercept = mean(Reviews_stats$mean[1]), color = "red") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+  labs(title = "Distribution of Games' Review")
+
+
+```
+
+- Take a look at the distribution of reviews. 
+  - The number of reviews is extremely right skewed as well. Most games have less than 200 reviews while the mean is 514050 because of the very few outliers at the right end. 
+
+
+```{r TYPE distribution}
+ggplot(data = games, aes(x = Type, fill = Type)) + 
+  geom_bar(color = "grey", ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+  labs(title = "Distribution of Games' TYPE")
+```
+- Look at the types of those games
+  - There are way more free games than paid games. 
+
+
+```{r}
+games_genres <-
+  games |>
+  group_by(Genres) |>
+  summarise(mean = mean(Rating),
+            count = n())
+
+ggplot(data = games_genres, aes(x = Genres, y = count)) + 
+  geom_count() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+  labs(title = "Distribution of Games' Genre")
+```
+
+- Looking at the distribution of the games' genre, we can see that Action game is the most popular genre, followed by arcade and racing game, other games have relatively low popularity. 
+
+----
+
+### 3.2 Data Analysis
+
+#### *Hypothesis 1*: game's popularity might affect its rating, while more popular game (`Reviews`) tends to get higher rating score. 
+```{r visualization 1.1, message=FALSE}
+reivew_line <- ggplot(data = games, aes(x = Reviews, y = Rating)) +
+  geom_line(size = 0.3) +
+  geom_smooth(method = "loess", span = 0.3, se = TRUE, size = 0.3, alpha = 0.5, color = "yellow") +
+  labs(title = "Rating varied based on number of reviews",
+       subtitle = "Figure 1: All games") +
+  guides(fill = "none") +
+  theme_gray() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 9, face = "italic"))
+
+
+
+review3_line <- games |>
+  filter(Rating > 3.5) |>
+  ggplot(aes(x = Reviews, y = Rating)) +
+  geom_line() +
+  geom_smooth(method = "loess", span = 0.3, se = TRUE, size = 0.3, alpha = 0.5, color = "yellow") +
+  labs(title = "Rating varied based on number of reviews",
+       subtitle = "Figure 2: Games that have rating higer than 3.5") +
+  theme_grey() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 9, face = "italic"))
+
+review_zoomed_line <- games |>
+  filter(Rating > 3.5,
+         Reviews < 20000000) |>
+  ggplot(aes(x = Reviews, y = Rating)) +
+  geom_line() +
+  geom_smooth(method = "loess", span = 0.1, se = TRUE, size = 0.3, alpha = 0.5, color = "yellow") +
+  labs(title = "Rating varied based on number of reviews",
+       subtitle = "Figure 3: Games that have rating higer than 3.5 and less than 30M reviews") +
+  theme_grey() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 9, face = "italic"))
+
+reivew_line
+review3_line
+review_zoomed_line
+#gridExtra::grid.arrange(reivew_line, review3_line, ncol=2)
+
+```
+
+**Visualization Explanation 1:**
+
+- Glimpse the Rating~Reviews relationship:
+  - Based on *Figure 1*, it seems that higher review counts would lead to a higher ratings. However, the sample for games with less reviews is way larger than that of more reviews. In order to have a more valid conclusion, we need to look into the data more.
+  - Since there's a ceiling effect on games' rating that most games get a quite high rating score, we tried to only include games that get a rating higher than 3.5 (*Figure 2*).
+  - There is also a flooring effect since most games did not get much review, and there is also a ceiling effect of the rating since most the rating score tend to clustered around 4.5. We decided to only include games that get a review higher that 3.5, and Reviews under 20M, to make the visualization more readable. And by eyeballing, we can conclude that popular games get a higher rating (*Figure 3*). 
+
+```{r visualization 1.2, warning = FALSE, error=FALSE, message=FALSE}
+games <- games |>
+  mutate(
+    Popularity = case_when(
+      # We consider Reviews < 20000000(0) as less popular and >= as more popular (1)
+      Reviews < 20000000 ~ 0,
+      Reviews >= 20000000 ~ 1,
+      TRUE ~ Reviews
+    )
+  )
+# We let the new created Popularity column to be in the character form
+games$Popularity <- as.character(games$Popularity)
+
+games <- games |>
+  mutate(
+    Popularity = case_when(
+      # as aforementioned, 0 as less popular and 1 as more popular
+      Popularity == "0" ~ "less popular",
+      Popularity == "1" ~ "more popular",
+      TRUE ~ Popularity
+    )
+  )
+
+#Less popular games: 
+games |>
+  # we set 3.5 as a benchmark
+  filter(Rating > 3.5,
+         Reviews < 20000000) |>
+  ggplot(aes(y = Rating, x = Reviews)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = T) +
+  labs(title = "Rating varied based on number of reviews",
+       subtitle = "Figure 4: Less popular games that have rating higer than 3.5") +
+  theme_grey() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 9, face = "italic"))
+
+#More popular games:
+games |>
+  filter(Rating > 3.5,
+         Reviews > 20000000) |>
+  ggplot(aes(y = Rating, x = Reviews)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = T) +
+  labs(title = "Rating varied based on number of reviews",
+       subtitle = "Figure 4: More popular games that have rating higer than 3.5") +
+  theme_grey() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 9, face = "italic"))
+
+
+```
+
+**Visualization Explanation 2:**
+
+- We further looked at those among most popular games (we defined by Reviews > 30M). Both "Most popular games" and "Less popular games" show a postive trend between Rating and Reviews.
+   
+ 
+```{r model 1}
+review_model <- lm(Rating ~ Reviews, data = games)
+popularity_model <- lm(Rating ~ Popularity, data = games)
+
+review_model |> tidy()
+popularity_model |> tidy()
+
+glance(review_model)$adj.r.squared
+glance(popularity_model)$adj.r.squared
+```
+
+**Model Explanation:**
+
+- So we assess the linear models by two means:
+  - numeric ~ numeric model (Use `Reviews` as predictor)
+    - significant
+    - adj.r.sqr = 0.02768232 (Use `Reviews` as predictor could explain 2.7% of variability of the `Rating`)
+  - numeric ~ categorical model (Use `Popularity` as predictor, a game is either less popular or more popular based on how many reviews it got)
+    - significant
+    - adj.r.sqr = 0.004802433
+- By looking at the adjusted r-squared, both models only count for a small portion of variations in Rating. Although the model that uses `Reviews` as the predictor is slightly better, we do not suggest either of them could sufficiently predict a game's rating.
+  
+
+#### *Hypothesis 2*: game's rating might be most affected by the genre, certain genre might always be rated better than others. 
+
+- The following code is used to visualize the games categorized by Genres.
+```{r visualization 2.1, fig.width = 15}
+games |>
+  ggplot(aes(x = Genres)) +
+  geom_bar() +
+  labs(title = "Genre count of game apps in our dataset") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + # easier to read genre names
+  geom_text(stat='count', aes(label=..count..), vjust=-.1) # add count value on top of each bar
+```
+
+**Visualization Explanation 1:**
+
+- By looking at the plot above, there are a lot less games in our dataset that are under most genres. Most of the games in our dataset fall into the genres of Action and Arcade.
+- We have less data points in the other genres aside from Action, Arcade, and Rating
+
+- The following code is used to look at the mean and median rating of each genre and visualize the distribution of rating for each genre 
+```{r visualization 2.2, fig.width = 15}
+games |>
+  group_by(Genres) |> # use group_by so that data points are grouped by Genre name
+  summarize(mean = mean(Rating), median = median(Rating)) # summarize the mean and median Rating for each Genre
+
+# visualize the distribution of Rating for each Genre
+games |>
+  ggplot(aes(x = Genres, y = Rating)) +
+  geom_boxplot() +
+  labs(title = "Rating distribution of each genre with mean rating shown in red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + # easier to view Genre names
+  stat_summary(fun= mean, geom="point", shape=42, size=4, color = "red") # visualize the mean Rating for each Genre
+```
+
+**Visualization Explanation 2:**
+
+- From the visualization we note that:
+  - Most genres have a mean rating less than the median rating. Since median > mean for many genres, the ratings are skewed left. Low rating scores are pulling the mean lower than the median. 
+  - In the genres Casual, Role Playing, Sports, and Word, the median < mean. So for these, the ratings are skewed right such that high rating scores are pulling the mean higher than the median.
+
+- In this next code chunk, we are creating a linear model to predict Rating from Genres and see how the adjustedd R squared performs
+```{r model 2}
+
+# create linear regression model that predicts Rating from Genres
+m_rating_game_category <- linear_reg() |>
+  set_engine("lm") |>
+  fit(Rating ~ Genres, data = games)
+
+# tidy output
+m_rating_game_category |>
+  tidy()
+
+# look at adjusted R squared
+glance(m_rating_game_category)$adj.r.squared
+```
+
+**Model Explanation:**
+
+- By looking at the p-values, many of the game genres have p-values > 0.05. Game genres that have p-values < 0.05 include:
+  - genres that fall under Card, Casual, Puzzle, Racing, Sports, and Trivia
+    - these genres are significantly different than the Action genre
+  
+- There are many different genres so we will interpret a few:
+  - The intercept is 4.29 which is the predicted Rating for a game that fall under the genre Action.
+  - A genre in the Adventure category is subject to a DECREASE of 0.085 in its predicted rating.
+  - A genre in the Card category is subject to a DECREASE of 0.2 in its predicted rating.
+  - A genre in the Sports category is subject to an INCREASE of 0.25 in its predicted rating.
+  - A genre in the Trivia category is subject to a DECREASE of 0.25 in its predicted rating.
+  
+- Looking at the adjusted R-squared value, 6.3% the variation can be explained by this model
+
+
+#### *Hypothesis 3*: people love free games! Free games might have higher ratings than paid games, and we can further explore how the variation of the price affects the rating. (Bella)
+
+```{r visualization 3.1}
+# a box plot to see the Q1,median, and Q3 comparison
+ggplot(data = games, mapping = aes(x = Type, y = Rating,color = Type)) + geom_boxplot()
+```
+
+**Visualization Explanation:**
+- According to the boxplot above, we could see that Q1, median and Q3 is higher in the Paid apps. Thus it is surprisingly opposite of our original hypothesis.Since there are way more free games than the paid games, there are more lowers ratings in the free apps.Thus it is reasonable to have lower rating apps for the Free apps. The median for the Paid is higher, resulting our hypothesis might not hold. We then further do the statistical model to see if that's statistically valid.
+
+- Then we checked the count for Free games vs. Paid games
+```{r some wrangling for confirming things}
+# if the count is evenly distributed
+games |>
+  count(Type)
+```
+
+- The above code confirm that there are way more Free apps compared with the Paid apps. And that might lead to the more lower ratings in the Free games.
+  
+```{r model 3}
+# linear model 1: Type vs. Rating
+TypeRating_Model <- linear_reg() |>
+  set_engine("lm") |>
+  fit(Rating ~ Type, data = games)
+tidy(TypeRating_Model)
+```
+
+
+**Model Explanation**
+- The linear model here is y-hat = 4.27980392 + 0.09292335 * X(1 if it is paid, 0 if it is free)
+
+- X is the `Type` (explanatory variable), and the Y-hat is the response variable, indicating the predicted ratings of the apps.
+
+- From this linear model, we could see that if the app is a paid app, then the rating will increase by 0.09292335.
+
+- Also the p-value is less than 0.05, which is the most used p critical value used in social science and academic field to define the significant difference in the analysis.
+
+- The slope means that for every 1-unit increase in Type (0 means free and 1 means paid), the ratings are predicted to have an increase in their score (relative to the intercept) of approximately 0.09292335.
+
+```{r}
+# R squared
+glance(TypeRating_Model)$r.squared
+glance(TypeRating_Model)$adj.r.squared
+```
+- The above is the $r^2$ an adjusted $r^2$ for the linear model, and it is 0.004225182 and 0.003315799 respectively.
+
+- The adjusted r square is less than the r square.
+
+- A multi-variant linear model is conducted below to see how the price will affect the rating of the games
+```{r model 4}
+# linear model 2: Type + Price vs. Rating
+TypeRatingPrice_Model <- linear_reg() |>
+  set_engine("lm") |>
+  fit(Rating ~ Type + Price, data = games)
+tidy(TypeRatingPrice_Model)
+```
+
+**Explanation**
+- The linear model here is y-hat = 4.27980392 + 0.07979365 * X1(1 if it is paid, 0 if it is free) + 0.00360603*X2(Price)
+
+- X is the `Type` and `Price`(explanatory variables), and the Y-hat is the response variable, indicating the predicted ratings of the apps.
+
+- From this linear model, we could see that if the app is a paid app, then the rating will increase by 0.07979365 and for every one dollar increase in the `Price`, the rating will increase by 0.00360603.
+
+- Also the p-value is larger than 0.05, then it is not statistically significant.
+
+- By looking at the p-values, Both of the explanatory variables have p-values > 0.05. 
+  
+- 0.429% the variation can be explained by this model
+```{r}
+glance(TypeRatingPrice_Model)$r.squared
+glance(TypeRatingPrice_Model)$adj.r.squared
+```
+- Since Type + Price is not statistically significant, how about Price alone as the explnatory variable?
+```{r model 5}
+TypePrice_Model <- linear_reg() |>
+  set_engine("lm") |>
+  fit(Rating ~ Price, data = games)
+tidy(TypePrice_Model)
+```
+- The linear model is y-hat(Rating) = 4.2823944 + 0.0153852*X(Price)
+- The model shows as the price goes up for 1 dollar then the Rating will go up 0.0153852.
+- The p value for Price is 0.07680473, which is larger than 0.05. Thus this is not statistical significant as well. 
+
+```{r}
+glance(TypePrice_Model)$r.squared
+glance(TypePrice_Model)$adj.r.squared
+```
+- Looking at the adjusted R-squared value, 0.1946175% the variation can be explained by this model. And this is a very small number.
+
+----
+
+### 3.3 Discussion of Results
+- *Hypothesis 1*
+  - game's rating is affected by how many reviews it got. If a game is more popular when it gets more reivews, we can conclude a positive trend between games' rating and how many reviews it got. Although more popular games (Reviews > 20M) is significantly different than less popular games (Review < 20) (p < 0.05), we are hesitant to use the game's review number to predict its rating because the low adj.r.sqr (both lower than 5%).
+- *Hypothesis 2*
+  - game's rating might be most affected by the genre, certain genres might always be rated better than others.
+  - In hypothesis 2, we looked at how using Genre as a predictor will affect Rating as an outcome. In our findings, the linear regression model produced an adjusted R-squared value of 6.3% which is a higher adjusted R-squared value compared to the other models we looked at in hypothesis 1 and 3.
+This suggests that Genre as a predictor can explain more variance in the model of predicting Rating.
+- *Hypothesis 3*
+  - Although the Type has been correlated with the Rating. It is not the case when Price+Type is added together. `Type`, which specifies whether one game is free or not, has been a statistically significant variable that increases the rating by 0.09292335. Thus we can conclude that we are 95% confident that the paid games have a higher rating than the free games by 0.07979365. However, as we add `Price` (numeric Type), it doesn’t hold that `Price` has been a causal variable that increases the rating because the p-value is very large (0.7776874 > 0.05). Trying the `Price` alone also doesn't show any statistical significant result. Thus `Type` alone shows a statistical significant predictor with the Rating.
+
+--- 
+
+## PART IV Conclusion
+> *By comparing several models (`REVEIW`, `GENRE`, `TYPE`, `TYPE+PRICE`, `PRICE`), we found that*: 
+
+- The number of review is generally not a helpful explanatory variable to predict a game's rating. 
+- Genre as a predictor is helpful in predicting the Rating of a game. 
+- Type as a predictor alone is helpful in predicting the Rating of a game, however, Type + Price and Price alone aren’t good predictors in predicting the Rating of a game. 
+
+> *Limitation*:
+
+- Although the games dataset records the games information from the Google store, there is not enough data to extend the result to a broader case. Since the games are from the Google store, we can’t conclude all game ratings are predicted by the `Review` number, `Type`(Free of Paid) and `Genre` . There are many other game platforms, such as Steam and Epic, which focus more on games alone. Moreover, we have dropped the NaN values that might affect the results of our study. But we can’t replace the NaN values with the average values or any other possible responses. Thus we drop NaN values and consider only the valid entries. 
+
+
+> *Future Direction*:
+
+- the original data set also contains version information, such as when is the last update and what is the current version. In real life, an app usually gets different rating when there is a update. Therefore, we would suggest to use version information to further investigate how version updates will affect a game's rating. Will frequent update result a better rating, or people just don't like too many updates. 
